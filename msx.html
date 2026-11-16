@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ConectaPlay</title>
+<!--
+  Plugin do ConectaPlay no Media Station X (Junior, 16/11/2026).
+  Roda DENTRO da TV do cliente (iframe do MSX) e busca canais, filmes e séries direto no servidor da lista
+  pela internet da casa (os servidores das listas bloqueiam a nuvem). Monta as telas no formato do MSX.
+  Sem senha guardada aqui: os dados da lista vêm de tv.conectaplay.tv.br só para TV ativada (código + WhatsApp).
+  Precisa ficar em http (as listas não têm https): publicado no GitHub Pages em http://plugin.conectaplay.tv.br
+  Só JavaScript antigo (ES5): TVs Samsung/LG velhas não entendem o novo.
+-->
+<script type="text/javascript" src="//msx.benzac.de/js/tvx-plugin.min.js"></script>
+<script type="text/javascript">
+(function () {
+  var q = {};
+  location.search.replace(/^\?/, '').split('&').forEach(function (p) { var kv = p.split('='); if (kv[0]) q[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || ''); });
+  var D = q.d || '', API = (q.b || 'https://tv.conectaplay.tv.br') + '/api/msx';
+  var EU = location.href.split('#')[0];   // este plugin (para as ações request:interaction)
+  var conta = null, contaEm = 0, cache = {};
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[{}]/g, ''); }
+  function get(url, cb, tempo) {
+    var x = new XMLHttpRequest(), feito = false;
+    var fim = function (e, v) { if (!feito) { feito = true; cb(e, v); } };
+    try { x.open('GET', url, true); } catch (e) { return fim(e); }
+    x.timeout = tempo || 20000;
+    x.onload = function () {
+      if (x.status < 200 || x.status >= 300) return fim(new Error('HTTP ' + x.status));
+      try { fim(null, JSON.parse(x.responseText)); } catch (e) { fim(new Error('resposta inválida')); }
+    };
+    x.onerror = function () { fim(new Error('sem conexão')); };
+    x.ontimeout = function () { fim(new Error('demorou demais')); };
+    x.send();
+  }
+  // Dados da lista desta TV (host, usuário, senha) + favoritos: perguntados ao ConectaPlay (1 vez a cada 2 min)
+  function minhaConta(cb, forcar) {
+    if (conta && !forcar && Date.now() - contaEm < 120000) return cb(null, conta);
+    get(API + '?r=cred&d=' + encodeURIComponent(D), function (e, r) {
+      var d = r && r.response && r.response.data;
+      if (e || !d || !d.host) return cb(e || new Error((r && r.response && r.response.message) || 'TV não ativada'));
+      conta = d; contaEm = Date.now(); cb(null, d);
+    });
+  }
+  function xt(acao, extra, cb) {
+    minhaConta(function (e, c) {
+      if (e) return cb(e);
+      var u = c.host + '/player_api.php?username=' + encodeURIComponent(c.user) + '&password=' + encodeURIComponent(c.pass) + (acao ? '&action=' + acao : '');
+      for (var k in (extra || {})) u += '&' + k + '=' + encodeURIComponent(extra[k]);
+      var h = cache[u];
+      if (h && Date.now() - h.t < 600000) return cb(null, h.v);
+      get(u, function (e2, v) { if (!e2) cache[u] = { t: Date.now(), v: v }; cb(e2, v); }, 25000);
+    });
+  }
+  function arr(v) { return Object.prototype.toString.call(v) === '[object Array]' ? v : []; }
+  function urlVideo(c, t, id, ext) {
+    var b = c.host + '/' + (t === 'live' ? 'live' : t === 'vod' ? 'movie' : 'series') + '/' + encodeURIComponent(c.user) + '/' + encodeURIComponent(c.pass) + '/' + id;
+    return b + (t === 'live' ? '.m3u8' : '.' + (ext || 'mp4'));
+  }
+  function req(dataId) { return 'request:interaction:' + dataId + '@' + EU; }
+  function ehFav(t, id) { return arr(conta && conta.favoritos).some(function (f) { return f.t === t && String(f.id) === String(id); }); }
+  function opcoesFav(t, id, nome, img) {
+    var fav = ehFav(t, id);
+    return { headline: nome, items: [{ icon: fav ? 'star-border' : 'star', label: fav ? 'Tirar dos favoritos' : 'Adicionar aos favoritos',
+      action: 'execute:' + API + '?r=fav&d=' + D, data: { t: t, id: String(id), n: String(nome || '').slice(0, 80), i: img || '' } }] };
+  }
+  function grade(headline, tipo, itens, hint) {
+    var tpl = tipo === 'live' ? { type: 'separate', layout: '0,0,3,2', color: 'msx-glass', imageFiller: 'height', icon: 'msx-white-soft:live-tv' }
+      : tipo === 'cats' ? { type: 'separate', layout: '0,0,4,1', color: 'msx-glass', icon: 'msx-white-soft:folder' }
+      : { type: 'separate', layout: '0,0,2,4', color: 'msx-glass', imageFiller: 'cover', icon: 'msx-white-soft:movie' };
+    return { type: 'list', headline: headline, hint: hint || (itens.length + ' itens'), template: tpl, items: itens.slice(0, 1500) };
+  }
+  function vazio(titulo, texto) {
+    return { type: 'pages', headline: titulo, pages: [{ items: [{ type: 'space', layout: '0,0,12,4', color: 'msx-glass', headline: titulo, text: texto }] }] };
+  }
+  function itemDe(c, t, s) {
+    var nome = esc(s.name);
+    if (t === 'live') return { title: nome, image: s.stream_icon || null, action: 'video:' + urlVideo(c, 'live', s.stream_id), options: opcoesFav('live', s.stream_id, nome, s.stream_icon) };
+    if (t === 'vod') return { title: nome, image: s.stream_icon || null, titleFooter: s.rating ? '★ ' + s.rating : '',
+      action: 'video:' + urlVideo(c, 'vod', s.stream_id, s.container_extension), options: opcoesFav('vod', s.stream_id, nome, s.stream_icon) };
+    return { title: nome, image: s.cover || null, titleFooter: s.rating ? '★ ' + s.rating : '',
+      action: 'content:' + req('serie:' + s.series_id), options: opcoesFav('series', s.series_id, nome, s.cover) };
+  }
+  var NOME = { live: 'TV ao Vivo', vod: 'Filmes', series: 'Séries' };
+  var ACAO_CATS = { live: 'get_live_categories', vod: 'get_vod_categories', series: 'get_series_categories' };
+  var ACAO_LISTA = { live: 'get_live_streams', vod: 'get_vod_streams', series: 'get_series' };
+
+  function categorias(t, cb) {
+    xt(ACAO_CATS[t], null, function (e, v) {
+      if (e) return cb(e);
+      var itens = arr(v).map(function (k) { return { title: esc(k.category_name), action: 'content:' + req('lista:' + t + ':' + k.category_id) }; });
+      itens.unshift({ title: 'Todos', titleFooter: 'Tudo de ' + NOME[t], action: 'content:' + req('lista:' + t + ':') });
+      cb(null, grade(NOME[t], 'cats', itens, arr(v).length + ' categorias'));
+    });
+  }
+  function lista(t, cat, cb) {
+    xt(ACAO_LISTA[t], cat ? { category_id: cat } : null, function (e, v) {
+      if (e) return cb(e);
+      minhaConta(function (e2, c) { cb(e2, e2 ? null : grade(NOME[t], t, arr(v).map(function (s) { return itemDe(c, t, s); }))); });
+    });
+  }
+  function serie(sid, cb) {
+    xt('get_series_info', { series_id: sid }, function (e, info) {
+      if (e) return cb(e);
+      minhaConta(function (e2, c) {
+        if (e2) return cb(e2);
+        info = info || {}; var eps = info.episodes || {}, itens = [];
+        Object.keys(eps).sort(function (a, b) { return Number(a) - Number(b); }).forEach(function (temp) {
+          arr(eps[temp]).forEach(function (ep) {
+            itens.push({ title: 'T' + temp + ' E' + ep.episode_num, titleFooter: esc(ep.title || ''),
+              image: (ep.info && ep.info.movie_image) || (info.info && info.info.cover) || null,
+              action: 'video:' + urlVideo(c, 'series', ep.id, ep.container_extension) });
+          });
+        });
+        cb(null, grade(esc((info.info && info.info.name) || 'Série'), 'live', itens, itens.length + ' episódios'));
+      });
+    });
+  }
+  function favoritos(cb) {
+    minhaConta(function (e, c) {
+      if (e) return cb(e);
+      var itens = arr(c.favoritos).map(function (f) {
+        var it = { title: esc(f.n), image: f.i || null, options: opcoesFav(f.t, f.id, f.n, f.i) };
+        it.action = f.t === 'series' ? 'content:' + req('serie:' + f.id) : 'video:' + urlVideo(c, f.t, f.id, f.t === 'vod' ? 'mp4' : null);
+        return it;
+      });
+      if (!itens.length) return cb(null, vazio('Favoritos', 'Ainda não tem favoritos. Em qualquer canal, filme ou série aperte o botão {col:msx-yellow}MENU{col} (ou segure OK) e escolha "Adicionar aos favoritos".'));
+      cb(null, grade('Favoritos', 'vod', itens));
+    }, true);
+  }
+  function buscar(termo, cb) {
+    var t = String(termo || '').toLowerCase().replace(/^\s+|\s+$/g, '');
+    if (t.length < 2) return cb(null, { headline: '{ico:search} Buscar', hint: 'Digite pelo menos 2 letras', items: [] });
+    var res = {}, falta = 3;
+    ['live', 'vod', 'series'].forEach(function (k) {
+      xt(ACAO_LISTA[k], null, function (e, v) { res[k] = e ? [] : arr(v); if (--falta === 0) pronto(); });
+    });
+    function pronto() {
+      minhaConta(function (e, c) {
+        if (e) return cb(e);
+        var casa = function (s) { return String(s.name || '').toLowerCase().indexOf(t) >= 0; };
+        var itens = [], rot = { live: 'Canal', vod: 'Filme', series: 'Série' };
+        ['live', 'vod', 'series'].forEach(function (k) {
+          res[k].filter(casa).slice(0, 60).forEach(function (s) { var it = itemDe(c, k, s); it.titleHeader = rot[k]; itens.push(it); });
+        });
+        cb(null, { headline: '{ico:search} "' + esc(termo) + '"', hint: itens.length + ' encontrados',
+          template: { type: 'separate', layout: '0,0,2,4', color: 'msx-glass', imageFiller: 'cover', icon: 'msx-white-soft:search' }, items: itens });
+      });
+    }
+  }
+
+  function Handler() {
+    this.init = function () { };
+    this.ready = function () { minhaConta(function () { }); };
+    this.handleEvent = function () { };
+    this.handleData = function () { };
+    this.handleRequest = function (dataId, data, callback) {
+      var p = String(dataId || '').split(':');
+      var fim = function (e, v) {
+        if (e) return callback(vazio('Não deu agora', 'Não conseguimos carregar (' + esc(e.message) + '). Confira a internet da TV e tente de novo. Se continuar, fale no WhatsApp (48) 99212-7260.'));
+        callback(v);
+      };
+      try {
+        if (p[0] === 'cats') return categorias(p[1], fim);
+        if (p[0] === 'lista') return lista(p[1], p.slice(2).join(':'), fim);
+        if (p[0] === 'serie') return serie(p.slice(1).join(':'), fim);
+        if (p[0] === 'favs') return favoritos(fim);
+        if (p[0] === 'buscar') return buscar(decodeURIComponent(p.slice(1).join(':')), fim);
+        fim(new Error('tela desconhecida'));
+      } catch (e) { fim(e); }
+    };
+  }
+  TVXPluginTools.onReady(function () {
+    TVXInteractionPlugin.setupHandler(new Handler());
+    TVXInteractionPlugin.init();
+  });
+})();
+</script>
+</head>
+<body></body>
+</html>

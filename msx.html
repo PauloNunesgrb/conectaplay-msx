@@ -171,8 +171,10 @@
       } catch (e) { fim(e); }
     };
   }
+  var H = new Handler();
+  window.cpTeste = function (id, cb) { H.handleRequest(id, null, cb || function (v) { console.log(JSON.stringify(v).slice(0, 2000)); }); };   // teste pelo navegador
   TVXPluginTools.onReady(function () {
-    TVXInteractionPlugin.setupHandler(new Handler());
+    TVXInteractionPlugin.setupHandler(H);
     TVXInteractionPlugin.init();
   });
 })();

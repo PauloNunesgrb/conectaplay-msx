@@ -136,26 +136,21 @@
   // Modo compacto do MSX = grade 16x8; com o menu aberto cabem 8 colunas.
   function paginas(headline, tipo, itens, hint, larg) {
     larg = larg || 8;
-    var max = itens.slice(0, 800), pags = [], i = 0;
+    var max = itens.slice(0, 400), lista = [], i = 0;
     var porLinha, linhas, w, h;
     if (tipo === 'poster') { w = 2; h = 4; porLinha = Math.floor(larg / w); linhas = 2; }
     else { w = larg; h = 1; porLinha = 1; linhas = 8; }
-    var porPag = porLinha * linhas;
-    for (i = 0; i < max.length; i += porPag) {
-      var pg = { items: [] };
-      max.slice(i, i + porPag).forEach(function (it, n) {
+    max.forEach(function (it, n) {
         var x = (n % porLinha) * w, y = Math.floor(n / porLinha) * h;
         var o = {}; for (var k in it) o[k] = it[k];
         o.layout = x + ',' + y + ',' + w + ',' + h;
         if (!o.color) o.color = COR.item;
         if (tipo === 'poster') { o.type = 'separate'; o.imageFiller = 'cover'; }
         else { o.type = 'default'; o.imageWidth = tipo === 'eps' ? 2 : 1; o.imageFiller = tipo === 'eps' ? 'cover' : 'fit'; }
-        pg.items.push(o);
-      });
-      pags.push(pg);
-    }
-    if (!pags.length) return vazio(headline, 'Nada por aqui.');
-    return deco({ type: 'pages', headline: headline, hint: hint || (itens.length + ' itens'), compress: true, pages: pags });
+        lista.push(o);
+    });
+    if (!lista.length) return vazio(headline, 'Nada por aqui.');
+    return deco({ type: 'list', headline: headline, hint: hint || (itens.length + ' itens'), compress: true, items: lista });
   }
   // Canais em H265/HEVC: a TV pelo Media Station X toca só o áudio. Esconde (fica a versão FHD/HD do mesmo canal).
   function semH265(v) { return arr(v).filter(function (s) { return !/h\.?265|hevc/i.test(String(s.name || '')); }); }

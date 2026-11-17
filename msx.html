@@ -92,13 +92,19 @@
   function vazio(titulo, texto) {
     return deco({ type: 'list', headline: titulo, items: [{ type: 'default', layout: '0,0,12,3', color: COR.item, icon: 'info-outline', title: titulo, text: texto, action: 'back' }] });
   }
+  // Vistos (selo verde): guardados junto com os favoritos desta TV
+  function visto(k, id) { return arr(conta && conta.favoritos).some(function (f) { return f.t === 'visto' && f.k === k && String(f.id) === String(id); }); }
+  function serieVista(sid) { return arr(conta && conta.favoritos).some(function (f) { return f.t === 'visto' && f.k === 'ep' && String(f.sid) === String(sid); }); }
+  function ver(t, id, ext, sid) { return { action: 'execute:' + API + '?r=ver&d=' + D, data: { t: t, id: String(id), ext: ext || 'mp4', sid: sid ? String(sid) : '' } }; }
+  function selo(o, sim, txt) { if (sim) { o.stamp = '{ico:check} ' + (txt || 'Visto'); o.stampColor = 'msx-green'; } return o; }
   function itemDe(c, t, s) {
     var nome = esc(s.name);
     if (t === 'live') return { title: nome, image: s.stream_icon || null, action: 'video:' + urlVideo(c, 'live', s.stream_id), options: opcoesFav('live', s.stream_id, nome, s.stream_icon) };
-    if (t === 'vod') return { title: nome, image: s.stream_icon || null, titleFooter: s.rating ? '★ ' + s.rating : '',
-      action: 'video:' + urlVideo(c, 'vod', s.stream_id, s.container_extension), options: opcoesFav('vod', s.stream_id, nome, s.stream_icon) };
-    return { title: nome, image: s.cover || null, titleFooter: s.rating ? '★ ' + s.rating : '',
-      action: 'content:' + req('serie:' + s.series_id), options: opcoesFav('series', s.series_id, nome, s.cover) };
+    if (t === 'vod') { var v = ver('vod', s.stream_id, s.container_extension);
+      return selo({ title: nome, image: s.stream_icon || null, titleFooter: s.rating ? '★ ' + s.rating : '',
+        action: v.action, data: v.data, options: opcoesFav('vod', s.stream_id, nome, s.stream_icon) }, visto('vod', s.stream_id)); }
+    return selo({ title: nome, image: s.cover || null, titleFooter: s.rating ? '★ ' + s.rating : '',
+      action: 'content:' + req('serie:' + s.series_id), options: opcoesFav('series', s.series_id, nome, s.cover) }, serieVista(s.series_id), 'Assistindo');
   }
   var NOME = { live: 'TV ao Vivo', vod: 'Filmes', series: 'Séries' };
   var ACAO_CATS = { live: 'get_live_categories', vod: 'get_vod_categories', series: 'get_series_categories' };
@@ -122,12 +128,13 @@
     xt(ACAO_CATS[t], null, function (e, v) {
       if (e) return cb(e);
       var menu = [
+        { icon: 'play-circle-outline', label: 'Voltar ao vídeo', action: 'player:show' },
         { icon: 'search', label: 'Buscar', action: acaoBusca() },
         { type: 'separator' },
         { icon: ICO[t], label: 'Todos', data: req('lista:' + t + ':') }
       ];
       arr(v).forEach(function (k) { menu.push({ icon: 'chevron-right', label: curto(k.category_name, t), data: req('lista:' + t + ':' + k.category_id) }); });
-      var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo-nome2.png', logoSize: 'large', style: 'flat-separator', menu: menu };
+      var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo-' + t + '.png', logoSize: 'large', style: 'flat-separator', menu: menu };
       deco(o);
       cb(null, o);
     });
@@ -169,9 +176,10 @@
         info = info || {}; var eps = info.episodes || {}, itens = [];
         Object.keys(eps).sort(function (a, b) { return Number(a) - Number(b); }).forEach(function (temp) {
           arr(eps[temp]).forEach(function (ep) {
-            itens.push({ title: 'T' + temp + ' E' + ep.episode_num, titleFooter: esc(ep.title || ''),
+            var v = ver('ep', ep.id, ep.container_extension, sid);
+            itens.push(selo({ title: 'T' + temp + ' E' + ep.episode_num, titleFooter: esc(ep.title || ''),
               image: (ep.info && ep.info.movie_image) || (info.info && info.info.cover) || null,
-              action: 'video:' + urlVideo(c, 'series', ep.id, ep.container_extension) });
+              action: v.action, data: v.data }, visto('ep', ep.id)));
           });
         });
         cb(null, paginas(esc((info.info && info.info.name) || 'Série'), 'eps', itens, itens.length + ' episódios', 8));
@@ -181,7 +189,7 @@
   function favoritos(cb) {
     minhaConta(function (e, c) {
       if (e) return cb(e);
-      var itens = arr(c.favoritos).map(function (f) {
+      var itens = arr(c.favoritos).filter(function (f) { return f.t !== 'visto'; }).map(function (f) {
         var it = { title: esc(f.n), image: f.i || null, options: opcoesFav(f.t, f.id, f.n, f.i) };
         it.action = f.t === 'series' ? 'content:' + req('serie:' + f.id) : 'video:' + urlVideo(c, f.t, f.id, f.t === 'vod' ? 'mp4' : null);
         return it;

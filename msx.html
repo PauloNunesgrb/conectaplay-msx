@@ -96,11 +96,16 @@
   function visto(k, id) { return arr(conta && conta.favoritos).some(function (f) { return f.t === 'visto' && f.k === k && String(f.id) === String(id); }); }
   function serieVista(sid) { return arr(conta && conta.favoritos).some(function (f) { return f.t === 'visto' && f.k === 'ep' && String(f.sid) === String(sid); }); }
   function ver(t, id, ext, sid, n, i, sn, si) { return { action: 'execute:' + API + '?r=ver&d=' + D, data: { t: t, id: String(id), ext: ext || 'mp4', sid: sid ? String(sid) : '', n: n || '', i: i || '', sn: sn || '', si: si || '' } }; }
+  // Canal ao vivo: abre direto no nosso player (antitravamento), sem passar pelo servidor (mais rápido)
+  var PLAYER = EU.replace(/msx\.html.*$/, 'player.html');
+  function aoVivo(c, id, nome) {
+    return 'video:plugin:' + PLAYER + '?v=' + encodeURIComponent(q.v || '') + '&t=live&d=' + encodeURIComponent(D) + '&b=' + encodeURIComponent(BASE) +
+      '&n=' + encodeURIComponent(String(nome || '').slice(0, 80)) + '&url=' + encodeURIComponent(urlVideo(c, 'live', id));
+  }
   function selo(o, sim, txt) { if (sim) { o.stamp = '{ico:check} ' + (txt || 'Visto'); o.stampColor = 'msx-green'; } return o; }
   function itemDe(c, t, s) {
     var nome = esc(s.name);
-    if (t === 'live') { var vl = ver('live', s.stream_id, null, null, nome, s.stream_icon);
-      return { title: nome, image: s.stream_icon || null, action: vl.action, data: vl.data, options: opcoesFav('live', s.stream_id, nome, s.stream_icon) }; }
+    if (t === 'live') return { title: nome, image: s.stream_icon || null, action: aoVivo(c, s.stream_id, nome), options: opcoesFav('live', s.stream_id, nome, s.stream_icon) };
     if (t === 'vod') { var v = ver('vod', s.stream_id, s.container_extension, null, nome, s.stream_icon);
       return selo({ title: nome, image: s.stream_icon || null, titleFooter: s.rating ? '★ ' + s.rating : '',
         action: v.action, data: v.data, options: opcoesFav('vod', s.stream_id, nome, s.stream_icon) }, visto('vod', s.stream_id)); }
@@ -130,7 +135,6 @@
       if (e) return cb(e);
       var menu = [
         { icon: 'play-circle-outline', label: 'Voltar ao vídeo', action: 'player:show' },
-        { icon: 'history', label: 'Vistos por último', data: req('recentes:' + t) },
         { icon: 'search', label: 'Buscar', action: acaoBusca() },
         { type: 'separator' },
         { icon: ICO[t], label: 'Todos', data: req('lista:' + t + ':') }
@@ -164,28 +168,6 @@
   }
   // Canais em H265/HEVC: a TV pelo Media Station X toca só o áudio. Esconde (fica a versão FHD/HD do mesmo canal).
   function semH265(v) { return arr(v).filter(function (s) { return !/h\.?265|hevc/i.test(String(s.name || '')); }); }
-  // "Vistos por último": canais, filmes e séries que esta TV abriu (o mais recente primeiro)
-  function recentes(t, cb) {
-    minhaConta(function (e, c) {
-      if (e) return cb(e);
-      var vs = arr(c.favoritos).filter(function (f) { return f.t === 'visto'; }), itens = [], jaSerie = {};
-      vs.forEach(function (f) {
-        if (t === 'live' && f.k === 'live') {
-          var v = ver('live', f.id, null, null, f.n, f.i);
-          itens.push({ title: esc(f.n || 'Canal'), image: f.i || null, action: v.action, data: v.data, options: opcoesFav('live', f.id, f.n, f.i) });
-        } else if (t === 'vod' && f.k === 'vod') {
-          var v2 = ver('vod', f.id, f.ext, null, f.n, f.i);
-          itens.push(selo({ title: esc(f.n || 'Filme'), image: f.i || null, action: v2.action, data: v2.data, options: opcoesFav('vod', f.id, f.n, f.i) }, true));
-        } else if (t === 'series' && f.k === 'ep' && f.sid && !jaSerie[f.sid]) {
-          jaSerie[f.sid] = 1;
-          itens.push(selo({ title: esc(f.sn || 'Série'), image: f.si || null, action: 'content:' + req('serie:' + f.sid),
-            options: opcoesFav('series', f.sid, f.sn, f.si) }, true, 'Assistindo'));
-        }
-      });
-      if (!itens.length) return cb(null, vazio('Vistos por último', 'Ainda não tem nada aqui. O que você assistir nesta TV aparece nesta lista.'));
-      cb(null, paginas('Vistos por último', t === 'live' ? 'live' : 'poster', itens, itens.length + ' itens', 8));
-    }, true);
-  }
   function lista(t, cat, cb) {
     xt(ACAO_LISTA[t], cat ? { category_id: cat } : null, function (e, v) {
       if (e) return cb(e);
@@ -216,7 +198,8 @@
       var itens = arr(c.favoritos).filter(function (f) { return f.t !== 'visto'; }).map(function (f) {
         var it = { title: esc(f.n), image: f.i || null, options: opcoesFav(f.t, f.id, f.n, f.i) };
         if (f.t === 'series') it.action = 'content:' + req('serie:' + f.id);
-        else { var v = ver(f.t, f.id, f.t === 'vod' ? 'mp4' : null, null, f.n, f.i); it.action = v.action; it.data = v.data; }   // canal favorito também no player com antitravamento
+        else if (f.t === 'live') it.action = aoVivo(c, f.id, f.n);   // canal favorito também no player com antitravamento
+        else { var v = ver(f.t, f.id, 'mp4', null, f.n, f.i); it.action = v.action; it.data = v.data; }
         return it;
       });
       if (!itens.length) return cb(null, vazio('Favoritos', 'Ainda não tem favoritos. Em qualquer canal, filme ou série aperte o botão {col:msx-yellow}MENU{col} (ou segure OK) e escolha "Adicionar aos favoritos".'));
@@ -260,7 +243,6 @@
       function executar() { try {
         if (p[0] === 'cats') return categorias(p[1], fim);
         if (p[0] === 'menu') return menuCats(p[1], fim);
-        if (p[0] === 'recentes') return recentes(p[1], fim);
         if (p[0] === 'lista') return lista(p[1], p.slice(2).join(':'), fim);
         if (p[0] === 'serie') return serie(p.slice(1).join(':'), fim);
         if (p[0] === 'favs') return favoritos(fim);

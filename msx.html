@@ -80,12 +80,12 @@
   }
   // tipo: 'cats' (categorias), 'live' (canais: logo à esquerda), 'eps' (episódios), 'poster' (filmes/séries)
   function grade(headline, tipo, itens, hint, corCat) {
-    var tpl = tipo === 'live' ? { type: 'separate', layout: '0,0,4,1', color: COR.item, imageWidth: 1, imageFiller: 'fit', icon: 'msx-white-soft:live-tv' }
-      : tipo === 'eps' ? { type: 'separate', layout: '0,0,6,1', color: COR.item, imageWidth: 2, imageFiller: 'cover', icon: 'msx-white-soft:play-circle-outline' }
-      : tipo === 'cats' ? { type: 'separate', layout: '0,0,4,1', color: COR.cats, icon: (corCat ? 'msx-white:' : 'msx-white-soft:') + 'folder', iconSize: 'small' }
-      : { type: 'separate', layout: '0,0,2,3', color: COR.item, imageFiller: 'cover', icon: 'msx-white-soft:movie' };
+    var tpl = tipo === 'live' ? { type: 'default', layout: '0,0,4,1', color: COR.item, imageWidth: 1, imageFiller: 'fit', icon: 'msx-white-soft:live-tv' }
+      : tipo === 'eps' ? { type: 'default', layout: '0,0,6,1', color: COR.item, imageWidth: 2, imageFiller: 'cover', icon: 'msx-white-soft:play-circle-outline' }
+      : tipo === 'cats' ? { type: 'default', layout: '0,0,4,1', color: COR.cats }
+      : { type: 'separate', layout: '0,0,2,3', color: COR.item, imageFiller: 'cover' };
     var o = { type: 'list', headline: headline, hint: hint || (itens.length + ' itens'), template: tpl, items: itens.slice(0, 1500),
-      header: { items: [{ type: 'default', layout: '0,0,4,1', color: '#0f9b74', icon: 'msx-white:search', title: 'Buscar', titleFooter: 'Canal, filme ou série', action: acaoBusca() }] } };
+      header: { items: [{ type: 'default', layout: '0,0,4,1', color: '#0f9b74', title: '{ico:search} Buscar', titleFooter: 'Canal, filme ou série', action: acaoBusca() }] } };
     if (tipo === 'poster') o.compress = true;
     return deco(o);
   }
@@ -107,8 +107,8 @@
   function categorias(t, cb) {
     xt(ACAO_CATS[t], null, function (e, v) {
       if (e) return cb(e);
-      var itens = arr(v).map(function (k) { return { title: esc(k.category_name), color: COR.cats, icon: 'msx-white-soft:folder', action: 'content:' + req('lista:' + t + ':' + k.category_id) }; });
-      itens.unshift({ title: 'Todos', titleFooter: 'Tudo de ' + NOME[t], color: COR[t], icon: 'msx-white:apps', action: 'content:' + req('lista:' + t + ':') });
+      var itens = arr(v).map(function (k) { return { title: esc(k.category_name), color: COR.cats, action: 'content:' + req('lista:' + t + ':' + k.category_id) }; });
+      itens.unshift({ title: 'Todos', titleFooter: 'Tudo de ' + NOME[t], color: COR[t], action: 'content:' + req('lista:' + t + ':') });
       cb(null, grade(NOME[t], 'cats', itens, arr(v).length + ' categorias'));
     });
   }

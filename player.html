@@ -213,7 +213,7 @@
       return out;
     },
     atual: function () { return this.reservaUrl || this.url; },
-    abrir: function () { this.sources = this.plan(this.atual()); this.si = -1; this.next(); },
+    abrir: function () { this.pulouAoVivo = false; this.sources = this.plan(this.atual()); this.si = -1; this.next(); },
     // O servidor não respondeu: o mesmo canal pelo outro endereço do fornecedor (uma vez por abertura)
     trocarHost: function (motivo) {
       if (this.hostTrocado) return false;
@@ -465,10 +465,16 @@
         if (this.reconnects && this.tocandoDesde && now - this.tocandoDesde > 30000) { this.reconnects = 0; this.hostTrocado = false; this.qualTentadas = {}; log('Estável há 30 s'); }
         this.lastT = video.currentTime; this.lastMove = now;
         // Muito vídeo guardado à frente (chegou numa rajada) = atrasado do ao vivo: chega perto da ponta
-        var b = video.buffered;
-        if (b.length) {
-          var fim = b.end(b.length - 1);
-          if (fim - video.currentTime > 15) { log('Atrasado ' + Math.round(fim - video.currentTime) + ' s: chegando no ao vivo'); try { video.currentTime = fim - 3; } catch (x) { } }
+        // Só 1 vez por abertura (17/11/2026: com o vídeo guardado "partido" o pulo não pegava, repetia a cada
+        // 4 s e as mesmas falas ficavam em loop). Guardado partido = reabre o canal limpo, também 1 vez só.
+        var b = video.buffered, ct = video.currentTime;
+        if (b.length && !this.pulouAoVivo) {
+          var fim = b.end(b.length - 1), junto = b.start(b.length - 1) <= ct + 0.5;
+          if (fim - ct > 15) {
+            this.pulouAoVivo = true;
+            if (junto && fim - ct < 60) { log('Atrasado ' + Math.round(fim - ct) + ' s: chegando no ao vivo'); try { video.currentTime = fim - 3; } catch (x) { } }
+            else if (now - (this.partidoEm || 0) > 120000) { this.partidoEm = now; log('Vídeo guardado partido (' + Math.round(fim - ct) + ' s): reabrindo o canal limpo'); this.abrir(); }
+          }
         }
         return;
       }

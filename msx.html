@@ -65,7 +65,9 @@
       var h = cache[u];
       if (h && Date.now() - h.t < 600000) return cb(null, h.v);
       get(u, function (e2, v) {
-        if (!e2) { cache[u] = { t: Date.now(), v: v }; return cb(null, v); }
+        var guarda = /_categories$/.test(acao || '') ? 'cp_cats_' + c.user + '_' + acao : '';
+        if (!e2) { cache[u] = { t: Date.now(), v: v }; if (guarda) { try { localStorage.setItem(guarda, JSON.stringify(v)); } catch (x) { } } return cb(null, v); }
+        if (guarda) { try { var salvo = JSON.parse(localStorage.getItem(guarda) || 'null'); if (salvo) return cb(null, salvo); } catch (x) { } }
         // Servidor do fornecedor sem resposta: tenta o outro endereço dele (e fica nele até o app fechar)
         var outro = outroHost(c.host);
         if (outro && !trocado[c.host]) { trocado[outro] = 1; usarHost[c.host] = outro; delete usarHost[outro]; c.host = outro; return xt(acao, extra, cb); }
@@ -148,7 +150,7 @@
   }
   function menuCats(t, cb) {
     xt(ACAO_CATS[t], null, function (e, v) {
-      if (e) return cb(e);
+      if (e) v = [];   // 17/11: o servidor da lista recusou as categorias; abre com Todos e Buscar
       var menu = [
         { icon: 'play-circle-outline', label: 'Voltar ao vídeo', action: 'player:show' },
         { icon: 'search', label: 'Buscar', action: acaoBusca() },

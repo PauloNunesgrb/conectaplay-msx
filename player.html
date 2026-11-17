@@ -170,6 +170,29 @@
     }
   };
 
+  // Outras qualidades do mesmo canal (só carrega quando o canal entra em loop)
+  var Qual = {
+    mapa: null, de: '', carregando: false,
+    carregar: function (host, user, pass) {
+      var self = this;
+      if (this.carregando) return;
+      this.carregando = true;
+      getJson(host + '/player_api.php?username=' + user + '&password=' + pass + '&action=get_live_streams', 45000, function (e, d) {
+        self.carregando = false;
+        if (e || Object.prototype.toString.call(d) !== '[object Array]') return;
+        var m = {};
+        for (var i = 0; i < d.length; i++) {
+          var c = d[i]; if (!c || c.stream_id == null) continue;
+          var k = chave(c.name); if (!k || /h265|hevc/.test(k)) continue;
+          var b = k.replace(RE_Q, ''); if (b.length < 4) continue;
+          (m[b] = m[b] || []).push({ id: String(c.stream_id), n: String(c.name || '') });
+        }
+        self.mapa = m; self.de = host + user;
+        log('Qualidades do canal prontas');
+      });
+    }
+  };
+
   // ---------- player ----------
   var P = {
     url: q.url || '', reservaUrl: null, sources: [], si: -1, session: 0,
@@ -334,6 +357,7 @@
     reconnect: function () {
       var self = this, n = ++this.reconnects;
       var espera = n > 3 ? Math.min(5000 * (n - 3), 20000) : 0;
+      if (n === 1) { var mq = /^(https?:\/\/[^\/]+)\/live\/([^\/]+)\/([^\/]+)\//.exec(this.atual() || ''); if (mq && !Qual.mapa) Qual.carregar(mq[1], mq[2], mq[3]); }   // já deixa as outras qualidades prontas
       this.lastMove = Date.now() + espera;
       // 3 travadas do mesmo canal em 5 min também trocam de linha (canal que volta e trava de novo)
       var agora = Date.now();
@@ -341,11 +365,34 @@
       t5.push(agora);
       var trocou = (n >= 2 || t5.length >= 3) && this.trocarLinha(n >= 2 ? 'travou 2x seguidas' : '3 travadas em 5 min');
       if (trocou) { this.reconnects = 0; this.travadas5 = []; espera = 0; this.lastMove = Date.now(); }
-      else { this.hostTrocado = false; if (this.trocarHost('travou')) espera = 0; }
+      else {
+        this.hostTrocado = false;
+        if (this.trocarHost('travou')) espera = 0;
+        else if (n >= 2 && this.trocarQualidade()) { espera = 0; trocou = true; }
+      }
       log('Reconectando (' + n + ')' + (trocou ? ' na outra linha' : '') + (espera ? ' em ' + espera / 1000 + ' s' : ''));
       if (MSX) { try { TVXVideoPlugin.startLoading(); } catch (e) { } }
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = setTimeout(function () { self.mpRetries = 0; self.abrir(); }, espera);
+    },
+
+    // O mesmo canal em outra qualidade da MESMA linha ("TELECINE ACTION FHD" → "HD" → "SD"): quando o
+    // servidor perdeu só aquela versão do canal (o loop das mesmas falas). A lista só é baixada se precisar.
+    trocarQualidade: function () {
+      var self = this, u = this.atual();
+      var m = /^(https?:\/\/[^\/]+)\/live\/([^\/]+)\/([^\/]+)\/(\d+)\.(m3u8|ts)/.exec(u || '');
+      if (!m) return false;
+      if (!Qual.mapa || Qual.de !== m[1] + m[2]) { Qual.carregar(m[1], m[2], m[3]); return false; }
+      var base = chave(NOME).replace(RE_Q, ''), tent = this.qualTentadas = this.qualTentadas || {};
+      tent[m[4]] = 1;
+      var lista = Qual.mapa[base] || [], prox = null;
+      for (var i = 0; i < lista.length; i++) if (!tent[lista[i].id]) { prox = lista[i]; break; }
+      if (!prox) { this.qualTentadas = {}; return false; }
+      tent[prox.id] = 1;
+      var novo = m[1] + '/live/' + m[2] + '/' + m[3] + '/' + prox.id + '.m3u8';
+      if (this.reservaUrl) this.reservaUrl = novo; else this.url = novo;
+      log('Canal preso no mesmo trecho: indo para ' + prox.n);
+      return true;
     },
 
     // Principal → reserva, ou reserva com problema → principal. Só decide o endereço.
@@ -414,6 +461,7 @@
       if (video.paused && video.readyState >= 2) this.tocar();   // a TV pausou sozinha: dá o play de novo
       if (video.currentTime !== this.lastT) {
         this.solucoAberto = false;
+        if (this.reconnects && this.tocandoDesde && now - this.tocandoDesde > 30000) { this.reconnects = 0; this.hostTrocado = false; this.qualTentadas = {}; log('Estável há 30 s'); }
         this.lastT = video.currentTime; this.lastMove = now;
         // Muito vídeo guardado à frente (chegou numa rajada) = atrasado do ao vivo: chega perto da ponta
         var b = video.buffered;
@@ -436,7 +484,9 @@
   // ---------- eventos do vídeo → MSX ----------
   video.addEventListener('playing', function () {
     if (!P.started) { P.started = true; clearTimeout(P.openTimer); log('Tocando'); }
-    P.reconnects = 0; P.mpRetries = 0; P.hostTrocado = false;
+    P.mpRetries = 0; P.tocandoDesde = Date.now();
+    // Loop do tempo (17/11/2026): servidor sem o canal manda sempre os mesmos últimos segundos guardados;
+    // a imagem anda uns segundos e para de novo. Por isso a conta de travadas só zera com 30 s tocando direto.
     if (P.desmutar) {
       P.desmutar = false; video.muted = false;
       setTimeout(function () { if (video.paused && !P.userPaused) { video.muted = true; var p = video.play(); if (p && p.catch) p.catch(function () { }); } }, 0);

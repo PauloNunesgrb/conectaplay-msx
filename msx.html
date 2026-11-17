@@ -215,7 +215,8 @@
       if (e) return cb(e);
       var itens = arr(c.favoritos).filter(function (f) { return f.t !== 'visto'; }).map(function (f) {
         var it = { title: esc(f.n), image: f.i || null, options: opcoesFav(f.t, f.id, f.n, f.i) };
-        it.action = f.t === 'series' ? 'content:' + req('serie:' + f.id) : 'video:' + urlVideo(c, f.t, f.id, f.t === 'vod' ? 'mp4' : null);
+        if (f.t === 'series') it.action = 'content:' + req('serie:' + f.id);
+        else { var v = ver(f.t, f.id, f.t === 'vod' ? 'mp4' : null, null, f.n, f.i); it.action = v.action; it.data = v.data; }   // canal favorito também no player com antitravamento
         return it;
       });
       if (!itens.length) return cb(null, vazio('Favoritos', 'Ainda não tem favoritos. Em qualquer canal, filme ou série aperte o botão {col:msx-yellow}MENU{col} (ou segure OK) e escolha "Adicionar aos favoritos".'));

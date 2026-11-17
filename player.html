@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ConectaPlay Player</title>
+<!--
+  Player do ConectaPlay dentro do Media Station X (Junior, 17/11/2026, pedido do Paulo).
+  O player padrão do MSX não avisa quando trava e toca o canal em HLS (.m3u8), que fica bem atrás do ao vivo.
+  Este é o MESMO jeito do app ConectaPlay (tv-script.js → Player):
+   - canal ao vivo pelo "player rápido" (mpegts.js em .ts, igual FunPlay/IBO): bem mais perto do ao vivo;
+     não abriu → hls.js (.m3u8) → player da própria TV;
+   - pula-buraco ("pulinho") a cada 0,5 s; imagem parada 12 s = reabre o canal sozinho (nunca desiste);
+   - troca invisível de linha (Plano Sem Travar): 2ª travada seguida, 3 travadas em 5 min ou 4 engasgos
+     em 1 min → o MESMO canal passa a tocar pela outra linha do cliente; fica nela até fechar o MSX.
+  Tudo calado (regra de 08/11/2026): o cliente não vê mensagem técnica.
+  Só JavaScript antigo (ES5): TVs Samsung/LG velhas não entendem o novo.
+  Parâmetros: url (canal), n (nome do canal), t (live|vod), d (TV), b (servidor do ConectaPlay), teste=1 (no PC).
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; background: #000; }
+  #dbg { display: none; position: absolute; left: 8px; bottom: 8px; right: 8px; max-height: 40%; overflow: hidden;
+         font: 13px/1.35 monospace; color: #9f9; background: rgba(0,0,0,.6); padding: 6px; white-space: pre-wrap; }
+</style>
+<script type="text/javascript" src="//msx.benzac.de/js/tvx-plugin.min.js"></script>
+</head>
+<body>
+<video id="player" playsinline="playsinline"></video>
+<div id="dbg"></div>
+<script type="text/javascript">
+(function () {
+  var q = {};
+  location.search.replace(/^\?/, '').split('&').forEach(function (p) {
+    var i = p.indexOf('=');
+    var k = i < 0 ? p : p.slice(0, i), v = i < 0 ? '' : p.slice(i + 1);
+    try { if (k) q[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (e) { }
+  });
+  var TESTE = q.teste === '1';
+  var LIVE = (q.t || 'live') === 'live';
+  var NOME = q.n || '';
+  var D = q.d || '', API = (q.b || 'https://tv.conectaplay.tv.br') + '/api/msx';
+  var MSX = !TESTE && typeof TVXVideoPlugin !== 'undefined';
+  var video = document.getElementById('player');
+
+  // ---------- utilidades ----------
+  var linhas = [];
+  function log(t) {
+    if (MSX) { try { TVXVideoPlugin.debug('[CP] ' + t); } catch (e) { } }
+    if (TESTE) {
+      linhas.push(new Date().toTimeString().slice(0, 8) + ' ' + t);
+      if (linhas.length > 14) linhas.shift();
+      var el = document.getElementById('dbg'); el.style.display = 'block'; el.textContent = linhas.join('\n');
+    }
+  }
+  function sGet(k) { try { return window.sessionStorage.getItem(k); } catch (e) { return null; } }
+  function sSet(k, v) { try { if (v == null) window.sessionStorage.removeItem(k); else window.sessionStorage.setItem(k, v); } catch (e) { } }
+  function carregar(src, cb) {
+    var s = document.createElement('script'); s.src = src;
+    s.onload = function () { cb(true); }; s.onerror = function () { cb(false); };
+    document.head.appendChild(s);
+  }
+  function getJson(url, tempo, cb) {
+    var x = new XMLHttpRequest(), feito = false;
+    var fim = function (e, v) { if (!feito) { feito = true; cb(e, v); } };
+    try { x.open('GET', url, true); } catch (e) { return fim(e); }
+    x.timeout = tempo || 20000;
+    x.onload = function () {
+      if (x.status < 200 || x.status >= 300) return fim(new Error('HTTP ' + x.status));
+      try { fim(null, JSON.parse(x.responseText)); } catch (e) { fim(new Error('resposta inválida')); }
+    };
+    x.onerror = function () { fim(new Error('sem conexão')); };
+    x.ontimeout = function () { fim(new Error('demorou')); };
+    x.send();
+  }
+  // Mesmo "fold" do app: sem acento, minúsculo, só letras e números
+  function chave(n) {
+    var s = String(n || '').toLowerCase();
+    var de = 'áàâãäéèêëíìîïóòôõöúùûüçñ', para = 'aaaaaeeeeiiiiooooouuuucn';
+    var o = '';
+    for (var i = 0; i < s.length; i++) { var j = de.indexOf(s.charAt(i)); o += j >= 0 ? para.charAt(j) : s.charAt(i); }
+    return o.replace(/[^a-z0-9]/g, '');
+  }
+  var RE_Q = /(fhd|uhd|4k|hd|sd|h265|hevc|alt|1080p?|720p?)+$/;
+  function tsDe(u) { return /\.m3u8(\?|$)/i.test(u) ? u.replace(/\.m3u8(\?|$)/i, '.ts$1') : (/\.ts(\?|$)/i.test(u) ? u : ''); }
+  function m3u8De(u) { return /\.ts(\?|$)/i.test(u) ? u.replace(/\.ts(\?|$)/i, '.m3u8$1') : u; }
+  function hostDe(u) { var m = /^(https?:\/\/[^\/]+)/i.exec(u || ''); return m ? m[1] : ''; }
+
+  // ---------- linha reserva (Plano Sem Travar), igual ao Reserva do app ----------
+  // Regra do Paulo (06/11/2026): pulou para a reserva, FICA nela (todos os canais) até fechar o app;
+  // só volta para a principal se a reserva também der problema.
+  var Reserva = {
+    canais: null, carregando: false, sem: false, tentouEm: 0, filas: [],
+    ativa: function () { return sGet('cp_reserva') === '1'; },
+    marcar: function () { sSet('cp_reserva', '1'); },
+    desmarcar: function () { sSet('cp_reserva', null); },
+    preparar: function (cb) {
+      var self = this;
+      if (cb) this.filas.push(cb);
+      var avisar = function () { var f = self.filas; self.filas = []; for (var i = 0; i < f.length; i++) f[i](); };
+      if (this.canais || this.sem) return avisar();
+      if (this.carregando) return;
+      if (Date.now() - this.tentouEm < 5 * 60000) return avisar();
+      this.carregando = true; this.tentouEm = Date.now();
+      getJson(API + '?r=cred&d=' + encodeURIComponent(D), 15000, function (e, r) {
+        var c = r && r.response && r.response.data, x = c && c.reserva;
+        if (!e && c && !x) { self.carregando = false; self.sem = true; log('Sem linha reserva para esta TV'); return avisar(); }
+        if (!x) { self.carregando = false; return avisar(); }
+        var api = x.host + '/player_api.php?username=' + encodeURIComponent(x.user) + '&password=' + encodeURIComponent(x.pass);
+        getJson(api + '&action=get_live_streams', 60000, function (e2, d) {
+          self.carregando = false;
+          if (e2 || Object.prototype.toString.call(d) !== '[object Array]') { log('Reserva não carregou: ' + (e2 && e2.message)); return avisar(); }
+          var m = {};
+          for (var i = 0; i < d.length; i++) {
+            var it = d[i];
+            if (!it || it.stream_id == null) continue;
+            var k = chave(it.name);
+            if (k && !m[k] && !/h265|hevc/.test(k)) m[k] = x.host + '/live/' + encodeURIComponent(x.user) + '/' + encodeURIComponent(x.pass) + '/' + it.stream_id + '.m3u8';
+          }
+          self.canais = m;
+          log('Linha reserva pronta (' + (x.nome || 'reserva') + ', ' + d.length + ' canais)');
+          avisar();
+        });
+      });
+    },
+    url: function (nome) {
+      if (!this.canais) return null;
+      var k = chave(nome);
+      if (!k) return null;
+      if (this.canais[k]) return this.canais[k];
+      // "GLOBO SP FHD" × "GLOBO SP HD": mesmo canal com outra qualidade no outro fornecedor
+      var base = k.replace(RE_Q, '');
+      if (base.length < 4) return null;
+      var melhor = null;
+      for (var c in this.canais) {
+        if (c.indexOf(base) === 0 && /^(fhd|uhd|4k|hd|sd|alt|1080p?|720p?)*$/.test(c.slice(base.length))) {
+          if (!melhor || c.length < melhor.length) melhor = c;
+        }
+      }
+      return melhor ? this.canais[melhor] : null;
+    }
+  };
+
+  // ---------- player ----------
+  var P = {
+    url: q.url || '', reservaUrl: null, sources: [], si: -1, session: 0,
+    mp: null, hls: null, started: false, ready: false, userPaused: false, pausouEm: 0,
+    lastT: -1, lastMove: Date.now(), reconnects: 0, travadas5: [], solucos: [], solucoAberto: false,
+    jLast: 0, jCount: 0, jStep: 0.25, jAt: 0, pulos: 0, mpRetries: 0,
+    openTimer: null, reconnectTimer: null,
+
+    // Ordem de tentativa (igual planCom/planBase do app): ao vivo .ts rápido → .m3u8 hls.js → player da TV.
+    // Servidor que já recusou o .ts nesta sessão (sem CORS) vai direto para o hls.js.
+    plan: function (u) {
+      if (!LIVE) return [{ via: 'native', url: u }];
+      var ts = tsDe(u), m = m3u8De(u), out = [];
+      var semTs = sGet('cp_semts_' + hostDe(u)) === '1';
+      if (ts && !semTs) out.push({ via: 'mpegts', url: ts });
+      out.push({ via: 'hls', url: m });
+      out.push({ via: 'native', url: m });
+      return out;
+    },
+    atual: function () { return this.reservaUrl || this.url; },
+    abrir: function () { this.sources = this.plan(this.atual()); this.si = -1; this.next(); },
+
+    next: function () {
+      this.si++;
+      var s = this.sources[this.si];
+      if (!s) {
+        if (LIVE) { this.reconnect(); return; }
+        this.erroFinal(); return;
+      }
+      log('Abrindo via ' + s.via + (this.reservaUrl ? ' (reserva)' : ''));
+      if (s.via === 'mpegts') this.loadMpegts(s.url);
+      else if (s.via === 'hls') this.loadHls(s.url);
+      else this.loadNative(s.url);
+      this.armOpen();
+    },
+
+    reset: function () {
+      this.session++;
+      clearTimeout(this.openTimer);
+      this.started = false;
+      this.mpRetries = this.mpRetries || 0;
+      this.destroyMpegts(); this.destroyHls();
+      try { video.pause(); video.removeAttribute('src'); video.load(); } catch (e) { }
+      this.lastT = -1; this.lastMove = Date.now(); this.jCount = 0;
+    },
+    destroyMpegts: function () { var p = this.mp; if (!p) return; this.mp = null; try { p.pause(); p.unload(); p.detachMediaElement(); p.destroy(); } catch (e) { } },
+    destroyHls: function () { var h = this.hls; if (!h) return; this.hls = null; try { h.destroy(); } catch (e) { } },
+    // TV/navegador recusou o play com som: toca mudo e devolve o som logo que a imagem andar (igual ao app)
+    tocar: function () {
+      var self = this; this.userPaused = false;
+      var p = video.play();
+      if (p && p.catch) p.catch(function () {
+        if (video.muted) return;
+        video.muted = true; self.desmutar = true;
+        var p2 = video.play(); if (p2 && p2.catch) p2.catch(function () { });
+      });
+    },
+
+    // Canal que não começa em 10 s neste caminho: passa para o próximo (não fica girando)
+    armOpen: function () {
+      var self = this, s = this.session;
+      clearTimeout(this.openTimer);
+      this.openTimer = setTimeout(function () { if (s === self.session && !self.started) { log('Não abriu em 10 s'); self.next(); } }, 10000);
+    },
+
+    loadMpegts: function (u) {
+      var self = this;
+      this.reset();
+      var session = this.session;
+      var vai = function () {
+        if (session !== self.session) return;
+        var m = window.mpegts;
+        if (!m || !m.isSupported || !m.isSupported()) return self.next();
+        var p;
+        try {
+          // Mesma configuração do app ConectaPlay (= FunPlay, lida em 20/10/2026)
+          p = m.createPlayer({ type: 'mpegts', isLive: true, url: u }, { enableWorker: false, enableStashBuffer: false, liveBufferLatencyChasing: false });
+        } catch (e) { return self.next(); }
+        self.mp = p;
+        p.on(m.Events.ERROR, function (tipo, det) {
+          if (session !== self.session) return;
+          log('Player rápido falhou: ' + tipo + ' / ' + det);
+          self.destroyMpegts();
+          if (!self.started && self.mpRetries === 0 && /network/i.test(tipo)) sSet('cp_semts_' + hostDe(u), '1');   // servidor sem .ts para a TV
+          // Igual ao app: com o canal rodando, tenta o MESMO endereço em 2,5 s (até 2x) antes de mudar de caminho
+          if (self.started && self.mpRetries < 2) {
+            self.mpRetries++; self.lastMove = Date.now();
+            setTimeout(function () { if (session === self.session) self.loadMpegts(u); }, 2500);
+            return;
+          }
+          self.next();
+        });
+        p.attachMediaElement(video);
+        p.load();
+        self.tocar();
+      };
+      if (window.mpegts) vai(); else carregar('mpegts.min.js', vai);
+    },
+
+    loadHls: function (u) {
+      var self = this;
+      this.reset();
+      var session = this.session;
+      var vai = function () {
+        if (session !== self.session) return;
+        var H = window.Hls;
+        if (!H || !H.isSupported()) return self.next();
+        var hls = new H({
+          maxBufferLength: 8, maxMaxBufferLength: 15, maxBufferSize: 60 * 1000 * 1000, backBufferLength: 0,
+          highBufferWatchdogPeriod: 1, nudgeOffset: 0.2, nudgeMaxRetry: 5, maxBufferHole: 0.5,
+          startFragPrefetch: true, manifestLoadingMaxRetry: 3, fragLoadingMaxRetry: 6, levelLoadingMaxRetry: 6,
+          // Mesmos números do app (07/10/2026): folga de 3 pedaços, pula se ficar 10 para trás, acelera 5% para alcançar
+          liveSyncDurationCount: 3, liveMaxLatencyDurationCount: 10, maxLiveSyncPlaybackRate: 1.05
+        });
+        self.hls = hls;
+        var tent = 0;
+        hls.on(H.Events.MANIFEST_PARSED, function () { self.tocar(); });
+        hls.on(H.Events.ERROR, function (e, data) {
+          if (session !== self.session || !data.fatal) return;
+          log('hls.js: ' + data.type + ' / ' + data.details);
+          var manifest = /^manifest/i.test(data.details || '');
+          if (data.type === H.ErrorTypes.NETWORK_ERROR && !manifest && tent++ < 3) return hls.startLoad();
+          if (data.type === H.ErrorTypes.MEDIA_ERROR && tent++ < 3) return hls.recoverMediaError();
+          self.destroyHls();
+          self.next();
+        });
+        hls.loadSource(u);
+        hls.attachMedia(video);
+      };
+      if (window.Hls) vai(); else carregar('hls.min.js', vai);
+    },
+
+    loadNative: function (u) {
+      this.reset();
+      try { video.src = u; video.load(); } catch (e) { return this.next(); }
+      this.tocar();
+    },
+
+    erroFinal: function () {
+      log('Não deu para tocar');
+      if (MSX) { try { TVXVideoPlugin.stopLoading(); TVXVideoPlugin.error('Não foi possível reproduzir este conteúdo.'); } catch (e) { } }
+    },
+
+    // Reabre o canal sozinho, sem o cliente apertar nada. Nunca desiste no ao vivo: da 4ª vez em diante
+    // espera 5 s, 10 s... até 20 s para não martelar o servidor (igual ao app, 21/10/2026).
+    reconnect: function () {
+      var self = this, n = ++this.reconnects;
+      var espera = n > 3 ? Math.min(5000 * (n - 3), 20000) : 0;
+      this.lastMove = Date.now() + espera;
+      // 3 travadas do mesmo canal em 5 min também trocam de linha (canal que volta e trava de novo)
+      var agora = Date.now();
+      var t5 = this.travadas5 = this.travadas5.filter(function (t) { return agora - t < 300000; });
+      t5.push(agora);
+      var trocou = (n >= 2 || t5.length >= 3) && this.trocarLinha(n >= 2 ? 'travou 2x seguidas' : '3 travadas em 5 min');
+      if (trocou) { this.reconnects = 0; this.travadas5 = []; espera = 0; this.lastMove = Date.now(); }
+      log('Reconectando (' + n + ')' + (trocou ? ' na outra linha' : '') + (espera ? ' em ' + espera / 1000 + ' s' : ''));
+      if (MSX) { try { TVXVideoPlugin.startLoading(); } catch (e) { } }
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = setTimeout(function () { self.mpRetries = 0; self.abrir(); }, espera);
+    },
+
+    // Principal → reserva, ou reserva com problema → principal. Só decide o endereço.
+    trocarLinha: function (motivo) {
+      if (!this.reservaUrl) {
+        var ru = Reserva.url(NOME);
+        if (!ru) { Reserva.preparar(); return false; }   // reserva ainda carregando ou canal não existe nela
+        this.reservaUrl = ru;
+        Reserva.marcar();
+        log('Antitravamento: canal na linha reserva (' + motivo + ')');
+      } else {
+        this.reservaUrl = null;
+        Reserva.desmarcar();
+        log('Antitravamento: reserva com problema, de volta à principal (' + motivo + ')');
+      }
+      this.solucos = [];
+      return true;
+    },
+
+    // Pula-buraco a cada 0,5 s (receita do FunPlay, igual ao app): a imagem parou mas já tem vídeo
+    // guardado logo à frente → pula o buraco (0,25 s, dobrando até 1,6 s se repetir) e segue.
+    jumper: function () {
+      if (video.seeking || video.paused || video.ended || !this.started) { this.jLast = video.currentTime; this.jCount = 0; return; }
+      var w = video.currentTime, b = video.buffered, i, s, e;
+      if (Math.abs(w - this.jLast) < 0.05) {
+        if (++this.jCount >= 2 && b.length) {
+          var now = Date.now();
+          this.jStep = now - this.jAt < 5000 ? Math.min(this.jStep * 2, 1.6) : 0.25;
+          this.jAt = now;
+          for (i = 0; i < b.length; i++) {
+            s = b.start(i); e = b.end(i);
+            if (s > w + 0.05 && (LIVE || s - w < 5) && e > s) { this.pular(s + 0.05); break; }
+            if (w >= s && w < e && e - w > 0.3) { this.pular(Math.min(w + this.jStep, e - 0.05)); break; }
+          }
+          this.jCount = 0;
+        }
+      } else {
+        this.jCount = 0;
+        for (i = 0; i < b.length; i++) {
+          s = b.start(i); e = b.end(i);
+          if (w >= s && w < e && e - w < 0.5) {
+            for (var j = 0; j < b.length; j++) {
+              var s2 = b.start(j);
+              if (s2 > e && s2 - e <= 1.2 && b.end(j) - s2 > 1) { try { video.currentTime = s2 + 0.05; } catch (x) { } break; }
+            }
+            break;
+          }
+        }
+      }
+      this.jLast = video.currentTime;
+    },
+    pular: function (t) {
+      try { video.currentTime = t; } catch (x) { }
+      var p = video.play(); if (p && p.catch) p.catch(function () { });
+      this.pulos++;
+      log('Pulinho ' + this.pulos);
+    },
+
+    // Vigia a cada 2 s (igual ao app): ao vivo com a imagem parada 12 s = travou → reabre.
+    // Engasgando (para 2-5 s, volta, para de novo): 4 vezes em 1 min = servidor lento → outra linha.
+    watchdog: function () {
+      var now = Date.now();
+      if (!LIVE) return;
+      if (video.ended && now - this.lastMove > 3000) { this.reconnect(); return; }
+      if (!this.started || (video.paused && this.userPaused)) { this.lastMove = Math.max(this.lastMove, now); return; }
+      if (video.paused && video.readyState >= 2) this.tocar();   // a TV pausou sozinha: dá o play de novo
+      if (video.currentTime !== this.lastT) {
+        this.solucoAberto = false;
+        this.lastT = video.currentTime; this.lastMove = now;
+        // Muito vídeo guardado à frente (chegou numa rajada) = atrasado do ao vivo: chega perto da ponta
+        var b = video.buffered;
+        if (b.length) {
+          var fim = b.end(b.length - 1);
+          if (fim - video.currentTime > 15) { log('Atrasado ' + Math.round(fim - video.currentTime) + ' s: chegando no ao vivo'); try { video.currentTime = fim - 3; } catch (x) { } }
+        }
+        return;
+      }
+      if (!this.solucoAberto) {
+        this.solucoAberto = true;
+        var sol = this.solucos = this.solucos.filter(function (t) { return now - t < 60000; });
+        sol.push(now);
+        if (sol.length >= 4 && this.trocarLinha('engasgos')) { this.reconnects = 0; this.abrir(); return; }
+      }
+      if (now - this.lastMove > 12000) this.reconnect();
+    }
+  };
+
+  // ---------- eventos do vídeo → MSX ----------
+  video.addEventListener('playing', function () {
+    if (!P.started) { P.started = true; clearTimeout(P.openTimer); log('Tocando'); }
+    P.reconnects = 0; P.mpRetries = 0;
+    if (P.desmutar) {
+      P.desmutar = false; video.muted = false;
+      setTimeout(function () { if (video.paused && !P.userPaused) { video.muted = true; var p = video.play(); if (p && p.catch) p.catch(function () { }); } }, 0);
+    }
+    if (MSX) { try { TVXVideoPlugin.stopLoading(); TVXVideoPlugin.setState(TVXVideoState.PLAYING); } catch (e) { } }
+  });
+  video.addEventListener('canplay', function () {
+    if (!P.ready) {
+      P.ready = true;
+      if (MSX) { try { TVXVideoPlugin.applyVolume(); TVXVideoPlugin.stopLoading(); TVXVideoPlugin.startPlayback(true); } catch (e) { } }
+    }
+  });
+  video.addEventListener('waiting', function () { if (MSX) { try { TVXVideoPlugin.startLoading(); } catch (e) { } } });
+  video.addEventListener('pause', function () { if (MSX && P.userPaused) { try { TVXVideoPlugin.stopLoading(); TVXVideoPlugin.setState(TVXVideoState.PAUSED); } catch (e) { } } });
+  video.addEventListener('error', function () {
+    var s = P.sources[P.si];
+    if (s && s.via === 'native') { log('Player da TV: erro ' + (video.error && video.error.code)); P.next(); }
+  });
+  video.addEventListener('ended', function () {
+    if (!LIVE && MSX) { try { TVXVideoPlugin.stopPlayback(); } catch (e) { } }
+  });
+
+  var timers = [];
+  function ligar() {
+    if (!P.url) { log('Sem endereço do canal'); P.erroFinal(); return; }
+    timers.push(setInterval(function () { P.jumper(); }, 500));
+    timers.push(setInterval(function () { P.watchdog(); }, 2000));
+    if (LIVE && Reserva.ativa()) {
+      // Já pulou para a reserva nesta sessão: abre direto nela (espera a lista até 8 s)
+      var foi = false, vai = function () {
+        if (foi) return; foi = true;
+        var ru = Reserva.url(NOME);
+        if (ru) { P.reservaUrl = ru; log('Abrindo na linha reserva (ficou nela)'); }
+        P.abrir();
+      };
+      setTimeout(vai, 8000);
+      Reserva.preparar(vai);
+    } else {
+      P.abrir();
+      // Deixa a reserva pronta em segundo plano, para a troca ser na hora se travar
+      if (LIVE) setTimeout(function () { Reserva.preparar(); }, 6000);
+    }
+  }
+
+  // ---------- ponte com o Media Station X ----------
+  function Player() {
+    this.init = function () { };
+    this.ready = function () { if (MSX) { try { TVXVideoPlugin.startLoading(); } catch (e) { } } ligar(); };
+    this.dispose = function () {
+      for (var i = 0; i < timers.length; i++) clearInterval(timers[i]);
+      clearTimeout(P.reconnectTimer); P.reset();
+    };
+    this.play = function () {
+      var parado = P.pausouEm ? Date.now() - P.pausouEm : 0;
+      P.pausouEm = 0;
+      // Ao vivo pausado mais de 30 s: volta no ao vivo (reabre), não de onde parou
+      if (LIVE && parado > 30000) { P.userPaused = false; P.abrir(); return; }
+      P.tocar();
+    };
+    this.pause = function () { P.userPaused = true; P.pausouEm = Date.now(); try { video.pause(); } catch (e) { } };
+    this.stop = function () { P.userPaused = true; try { video.pause(); } catch (e) { } };
+    this.getDuration = function () { return LIVE ? 0 : (video.duration || 0); };
+    this.getPosition = function () { return LIVE ? 0 : (video.currentTime || 0); };
+    this.setPosition = function (p) { if (!LIVE) { try { video.currentTime = p; } catch (e) { } } };
+    this.setVolume = function (v) { video.volume = Math.max(0, Math.min(1, v / 100)); };
+    this.getVolume = function () { return video.volume * 100; };
+    this.setMuted = function (m) { video.muted = !!m; };
+    this.isMuted = function () { return video.muted; };
+    this.getSpeed = function () { return video.playbackRate || 1; };
+    this.setSpeed = function (s) { if (!LIVE) video.playbackRate = s; };
+    this.getUpdateData = function () { return { position: this.getPosition(), duration: this.getDuration(), speed: this.getSpeed() }; };
+  }
+
+  window.cpPlayer = P;   // teste pelo navegador
+  if (MSX) {
+    TVXPluginTools.onReady(function () {
+      TVXVideoPlugin.setupPlayer(new Player());
+      TVXVideoPlugin.init();
+    });
+  } else {
+    video.controls = true;
+    new Player().ready();
+  }
+})();
+</script>
+</body>
+</html>

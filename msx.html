@@ -127,7 +127,7 @@
         { icon: ICO[t], label: 'Todos', data: req('lista:' + t + ':') }
       ];
       arr(v).forEach(function (k) { menu.push({ icon: 'chevron-right', label: curto(k.category_name, t), data: req('lista:' + t + ':' + k.category_id) }); });
-      var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo-nome.png', logoSize: 'large', style: 'flat-separator', menu: menu };
+      var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo-nome2.png', logoSize: 'large', style: 'flat-separator', menu: menu };
       deco(o);
       cb(null, o);
     });

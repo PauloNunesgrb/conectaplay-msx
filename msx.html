@@ -68,6 +68,14 @@
         var guarda = /_categories$/.test(acao || '') ? 'cp_cats_' + c.user + '_' + acao : '';
         if (!e2) { cache[u] = { t: Date.now(), v: v }; if (guarda) { try { localStorage.setItem(guarda, JSON.stringify(v)); } catch (x) { } } return cb(null, v); }
         if (guarda) { try { var salvo = JSON.parse(localStorage.getItem(guarda) || 'null'); if (salvo) return cb(null, salvo); } catch (x) { } }
+        // Sem cópia na TV: a lista de categorias do fornecedor guardada no nosso site (cats/<servidor>_<ação>.json)
+        if (guarda) {
+          var hn = (/^https?:\/\/([^\/:]+)/i.exec(c.host) || [])[1] || '';
+          return get(EU.replace(/msx\.html.*$/, '') + 'cats/' + hn.toLowerCase() + '_' + acao + '.json', function (e3, v3) {
+            if (!e3 && arr(v3).length) return cb(null, v3);
+            cb(e2, v);
+          }, 10000);
+        }
         // Servidor do fornecedor sem resposta: tenta o outro endereço dele (e fica nele até o app fechar)
         var outro = outroHost(c.host);
         if (outro && !trocado[c.host]) { trocado[outro] = 1; usarHost[c.host] = outro; delete usarHost[outro]; c.host = outro; return xt(acao, extra, cb); }

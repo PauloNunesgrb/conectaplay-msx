@@ -136,7 +136,7 @@
   // Modo compacto do MSX = grade 16x8; com o menu aberto cabem 8 colunas.
   function paginas(headline, tipo, itens, hint, larg) {
     larg = larg || 8;
-    var max = itens.slice(0, 400), lista = [], i = 0;
+    var max = itens.slice(0, 200), lista = [], i = 0;
     var porLinha, linhas, w, h;
     if (tipo === 'poster') { w = 2; h = 4; porLinha = Math.floor(larg / w); linhas = 2; }
     else { w = larg; h = 1; porLinha = 1; linhas = 8; }

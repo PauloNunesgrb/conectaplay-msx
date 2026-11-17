@@ -24,13 +24,13 @@
   var COR = { live: '#c8233f', vod: '#1667d9', series: '#6a35c9', cats: '#14214a', item: '#14214a' };
   // Fundo azul com a logo no rodapé, sem a camada cinza, e MAC + senha no canto de cima
   function deco(o) {
-    o.background = BASE + '/msx/fundo2.jpg';
+    o.background = BASE + '/msx/fundo-limpo.jpg';
     o.transparent = 1;
     if (conta && conta.mac) o.extension = '{col:msx-white-soft}MAC{col} ' + conta.mac + '   {col:msx-white-soft}Senha{col} ' + (conta.codigo || '');
     return o;
   }
   function acaoBusca() {
-    return 'content:request:interaction:' + API + '?r=buscar&d=' + D + '&q={INPUT}|search:2|pt|Buscar canais, filmes e séries|' + BASE + '/msx/fundo2.jpg||Digite pelo menos 2 letras@http://msx.benzac.de/interaction/input.html';
+    return 'content:request:interaction:' + API + '?r=buscar&d=' + D + '&q={INPUT}|search:2|pt|Buscar canais, filmes e séries|' + BASE + '/msx/fundo-limpo.jpg||Digite pelo menos 2 letras@http://msx.benzac.de/interaction/input.html';
   }
 
   function esc(s) { return String(s == null ? '' : s).replace(/[{}]/g, ''); }
@@ -127,15 +127,42 @@
         { icon: ICO[t], label: 'Todos', data: req('lista:' + t + ':') }
       ];
       arr(v).forEach(function (k) { menu.push({ icon: 'chevron-right', label: curto(k.category_name, t), data: req('lista:' + t + ':' + k.category_id) }); });
-      var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo.png', logoSize: 'small', style: 'flat-separator', menu: menu };
-      deco(o); o.background = BASE + '/msx/fundo-menu.jpg';
+      var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo-nome.png', logoSize: 'large', style: 'flat-separator', menu: menu };
+      deco(o);
       cb(null, o);
     });
   }
+  // Monta a grade em páginas que cabem do lado direito, ao lado do menu de categorias (como no app ConectaPlay).
+  // Modo compacto do MSX = grade 16x8; com o menu aberto cabem 8 colunas.
+  function paginas(headline, tipo, itens, hint, larg) {
+    larg = larg || 8;
+    var max = itens.slice(0, 800), pags = [], i = 0;
+    var porLinha, linhas, w, h;
+    if (tipo === 'poster') { w = 2; h = 4; porLinha = Math.floor(larg / w); linhas = 2; }
+    else { w = larg; h = 1; porLinha = 1; linhas = 8; }
+    var porPag = porLinha * linhas;
+    for (i = 0; i < max.length; i += porPag) {
+      var pg = { items: [] };
+      max.slice(i, i + porPag).forEach(function (it, n) {
+        var x = (n % porLinha) * w, y = Math.floor(n / porLinha) * h;
+        var o = {}; for (var k in it) o[k] = it[k];
+        o.layout = x + ',' + y + ',' + w + ',' + h;
+        if (!o.color) o.color = COR.item;
+        if (tipo === 'poster') { o.type = 'separate'; o.imageFiller = 'cover'; }
+        else { o.type = 'default'; o.imageWidth = tipo === 'eps' ? 2 : 1; o.imageFiller = tipo === 'eps' ? 'cover' : 'fit'; }
+        pg.items.push(o);
+      });
+      pags.push(pg);
+    }
+    if (!pags.length) return vazio(headline, 'Nada por aqui.');
+    return deco({ type: 'pages', headline: headline, hint: hint || (itens.length + ' itens'), compress: true, pages: pags });
+  }
+  // Canais em H265/HEVC: a TV pelo Media Station X toca só o áudio. Esconde (fica a versão FHD/HD do mesmo canal).
+  function semH265(v) { return arr(v).filter(function (s) { return !/h\.?265|hevc/i.test(String(s.name || '')); }); }
   function lista(t, cat, cb) {
     xt(ACAO_LISTA[t], cat ? { category_id: cat } : null, function (e, v) {
       if (e) return cb(e);
-      minhaConta(function (e2, c) { cb(e2, e2 ? null : grade(NOME[t], t === 'live' ? 'live' : 'poster', arr(v).map(function (s) { return itemDe(c, t, s); }))); });
+      minhaConta(function (e2, c) { cb(e2, e2 ? null : paginas(NOME[t], t === 'live' ? 'live' : 'poster', (t === 'live' ? semH265(v) : arr(v)).map(function (s) { return itemDe(c, t, s); }), null, 8)); });
     });
   }
   function serie(sid, cb) {
@@ -151,7 +178,7 @@
               action: 'video:' + urlVideo(c, 'series', ep.id, ep.container_extension) });
           });
         });
-        cb(null, grade(esc((info.info && info.info.name) || 'Série'), 'eps', itens, itens.length + ' episódios'));
+        cb(null, paginas(esc((info.info && info.info.name) || 'Série'), 'eps', itens, itens.length + ' episódios', 8));
       });
     });
   }
@@ -164,7 +191,7 @@
         return it;
       });
       if (!itens.length) return cb(null, vazio('Favoritos', 'Ainda não tem favoritos. Em qualquer canal, filme ou série aperte o botão {col:msx-yellow}MENU{col} (ou segure OK) e escolha "Adicionar aos favoritos".'));
-      cb(null, grade('Favoritos', 'poster', itens));
+      cb(null, paginas('Favoritos', 'poster', itens, null, 16));
     }, true);
   }
   function buscar(termo, cb) {
@@ -172,7 +199,7 @@
     if (t.length < 2) return cb(null, vazio('Buscar', 'Digite pelo menos 2 letras.'));
     var res = {}, falta = 3;
     ['live', 'vod', 'series'].forEach(function (k) {
-      xt(ACAO_LISTA[k], null, function (e, v) { res[k] = e ? [] : arr(v); if (--falta === 0) pronto(); });
+      xt(ACAO_LISTA[k], null, function (e, v) { res[k] = e ? [] : (k === 'live' ? semH265(v) : arr(v)); if (--falta === 0) pronto(); });
     });
     function pronto() {
       minhaConta(function (e, c) {
@@ -183,7 +210,7 @@
           res[k].filter(casa).slice(0, 60).forEach(function (s) { var it = itemDe(c, k, s); it.titleHeader = rot[k]; itens.push(it); });
         });
         if (!itens.length) return cb(null, vazio('Nada encontrado', 'Não achamos "' + esc(termo) + '". Tente outra palavra.'));
-        cb(null, grade('Buscar: "' + esc(termo) + '"', 'poster', itens, itens.length + ' encontrados'));
+        cb(null, paginas('Buscar: "' + esc(termo) + '"', 'poster', itens, itens.length + ' encontrados', 16));
       });
     }
   }

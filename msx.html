@@ -138,8 +138,8 @@
     larg = larg || 8;
     var max = itens.slice(0, 200), lista = [], i = 0;
     var porLinha, linhas, w, h;
-    if (tipo === 'poster') { w = 2; h = 4; porLinha = Math.floor(larg / w); linhas = 2; }
-    else { w = larg; h = 1; porLinha = 1; linhas = 8; }
+    if (tipo === 'poster') { w = 2; h = 4; porLinha = 8; linhas = 2; }
+    else { w = 8; h = 1; porLinha = 2; linhas = 8; }
     var sobra = 16 - porLinha * w;   // espaço vazio no fim de cada linha: o conteúdo fica só ao lado do menu
     max.forEach(function (it, n) {
         var o = {}; for (var k in it) o[k] = it[k];
@@ -148,7 +148,6 @@
         if (tipo === 'poster') { o.type = 'separate'; o.imageFiller = 'cover'; }
         else { o.type = 'default'; o.imageWidth = tipo === 'eps' ? 2 : 1; o.imageFiller = tipo === 'eps' ? 'cover' : 'fit'; }
         lista.push(o);
-        if (sobra > 0 && (n % porLinha === porLinha - 1 || n === max.length - 1)) lista.push({ type: 'space', layout: '0,0,' + (sobra + (porLinha - 1 - n % porLinha) * w) + ',' + h });
     });
     if (!lista.length) return vazio(headline, 'Nada por aqui.');
     return deco({ type: 'list', headline: headline, hint: hint || (itens.length + ' itens'), compress: true,

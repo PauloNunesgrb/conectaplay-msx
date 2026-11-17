@@ -83,6 +83,29 @@
   var RE_Q = /(fhd|uhd|4k|hd|sd|h265|hevc|alt|1080p?|720p?)+$/;
   function tsDe(u) { return /\.m3u8(\?|$)/i.test(u) ? u.replace(/\.m3u8(\?|$)/i, '.ts$1') : (/\.ts(\?|$)/i.test(u) ? u : ''); }
   function m3u8De(u) { return /\.ts(\?|$)/i.test(u) ? u.replace(/\.ts(\?|$)/i, '.m3u8$1') : u; }
+  // ---------- endereço reserva do MESMO servidor (17/11/2026, SAT caiu com erro 522) ----------
+  // Fornecedor com 2 endereços: um caiu, o vigia passa para o outro (e volta, se o outro cair).
+  // Pares conhecidos + os que a TV aprende sozinha (server_info.url do próprio servidor).
+  var PAR = { 'satpremium1.shop': 'fontexofc.online', 'fontexofc.online': 'satpremium1.shop' };
+  function lGet(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
+  function lSet(k, v) { try { window.localStorage.setItem(k, v); } catch (e) { } }
+  var RE_H = /^(https?:\/\/)([^\/:]+)(:\d+)?(.*)$/i;
+  function outroHost(u) {
+    var m = RE_H.exec(u || ''); if (!m) return null;
+    var h = m[2].toLowerCase(), a = PAR[h] || lGet('cp_alt_' + h);
+    return a && a !== h ? m[1] + a + (m[3] || '') + m[4] : null;
+  }
+  function aprenderHost(u) {
+    var m = /^(https?:\/\/[^\/]+)\/(live|movie|series)\/([^\/]+)\/([^\/]+)\//.exec(u || ''); if (!m) return;
+    getJson(m[1] + '/player_api.php?username=' + m[3] + '&password=' + m[4], 15000, function (e, j) {
+      var si = j && j.server_info, h = RE_H.exec(m[1]);
+      if (e || !si || !si.url || !h) return;
+      var a = String(si.url).toLowerCase(), meu = h[2].toLowerCase();
+      if (a === meu || /^\d+\.\d+\.\d+\.\d+$/.test(a) || PAR[meu]) return;
+      lSet('cp_alt_' + meu, a); lSet('cp_alt_' + a, meu);
+      log('Endereço reserva do servidor: ' + a);
+    });
+  }
   function hostDe(u) { var m = /^(https?:\/\/[^\/]+)/i.exec(u || ''); return m ? m[1] : ''; }
 
   // ---------- linha reserva (Plano Sem Travar), igual ao Reserva do app ----------
@@ -106,7 +129,13 @@
         if (!e && c && !x) { self.carregando = false; self.sem = true; log('Sem linha reserva para esta TV'); return avisar(); }
         if (!x) { self.carregando = false; return avisar(); }
         var api = x.host + '/player_api.php?username=' + encodeURIComponent(x.user) + '&password=' + encodeURIComponent(x.pass);
-        getJson(api + '&action=get_live_streams', 60000, function (e2, d) {
+        var tentouOutro = false;
+        var pegar = function (api) { getJson(api + '&action=get_live_streams', 30000, function (e2, d) {
+          if ((e2 || Object.prototype.toString.call(d) !== '[object Array]') && !tentouOutro && outroHost(x.host + '/')) {
+            tentouOutro = true; x.host = outroHost(x.host + '/').replace(/\/$/, '');
+            log('Reserva: servidor sem resposta, tentando ' + x.host);
+            return pegar(x.host + '/player_api.php?username=' + encodeURIComponent(x.user) + '&password=' + encodeURIComponent(x.pass));
+          }
           self.carregando = false;
           if (e2 || Object.prototype.toString.call(d) !== '[object Array]') { log('Reserva não carregou: ' + (e2 && e2.message)); return avisar(); }
           var m = {};
@@ -119,7 +148,8 @@
           self.canais = m;
           log('Linha reserva pronta (' + (x.nome || 'reserva') + ', ' + d.length + ' canais)');
           avisar();
-        });
+        }); };
+        pegar(api);
       });
     },
     url: function (nome) {
@@ -161,6 +191,16 @@
     },
     atual: function () { return this.reservaUrl || this.url; },
     abrir: function () { this.sources = this.plan(this.atual()); this.si = -1; this.next(); },
+    // O servidor não respondeu: o mesmo canal pelo outro endereço do fornecedor (uma vez por abertura)
+    trocarHost: function (motivo) {
+      if (this.hostTrocado) return false;
+      var novo = outroHost(this.atual());
+      if (!novo) return false;
+      if (this.reservaUrl) this.reservaUrl = novo; else this.url = novo;
+      this.hostTrocado = true;
+      log('Servidor sem resposta (' + motivo + '): indo para ' + hostDe(novo));
+      return true;
+    },
 
     next: function () {
       this.si++;
@@ -202,7 +242,11 @@
     armOpen: function () {
       var self = this, s = this.session;
       clearTimeout(this.openTimer);
-      this.openTimer = setTimeout(function () { if (s === self.session && !self.started) { log('Não abriu em 10 s'); self.next(); } }, 10000);
+      this.openTimer = setTimeout(function () {
+        if (s !== self.session || self.started) return;
+        log('Não abriu em 10 s');
+        if (self.trocarHost('demorou')) { self.mpRetries = 0; self.abrir(); } else self.next();
+      }, 10000);
     },
 
     loadMpegts: function (u) {
@@ -223,6 +267,8 @@
           if (session !== self.session) return;
           log('Player rápido falhou: ' + tipo + ' / ' + det);
           self.destroyMpegts();
+          // Servidor fora do ar (erro 5xx / sem conexão) antes de abrir: outro endereço do fornecedor, se tiver
+          if (!self.started && /network/i.test(tipo) && self.trocarHost(String(det))) { self.abrir(); return; }
           if (!self.started && self.mpRetries === 0 && /network/i.test(tipo)) sSet('cp_semts_' + hostDe(u), '1');   // servidor sem .ts para a TV
           // Igual ao app: com o canal rodando, tenta o MESMO endereço em 2,5 s (até 2x) antes de mudar de caminho
           if (self.started && self.mpRetries < 2) {
@@ -295,6 +341,7 @@
       t5.push(agora);
       var trocou = (n >= 2 || t5.length >= 3) && this.trocarLinha(n >= 2 ? 'travou 2x seguidas' : '3 travadas em 5 min');
       if (trocou) { this.reconnects = 0; this.travadas5 = []; espera = 0; this.lastMove = Date.now(); }
+      else { this.hostTrocado = false; if (this.trocarHost('travou')) espera = 0; }
       log('Reconectando (' + n + ')' + (trocou ? ' na outra linha' : '') + (espera ? ' em ' + espera / 1000 + ' s' : ''));
       if (MSX) { try { TVXVideoPlugin.startLoading(); } catch (e) { } }
       clearTimeout(this.reconnectTimer);
@@ -389,7 +436,7 @@
   // ---------- eventos do vídeo → MSX ----------
   video.addEventListener('playing', function () {
     if (!P.started) { P.started = true; clearTimeout(P.openTimer); log('Tocando'); }
-    P.reconnects = 0; P.mpRetries = 0;
+    P.reconnects = 0; P.mpRetries = 0; P.hostTrocado = false;
     if (P.desmutar) {
       P.desmutar = false; video.muted = false;
       setTimeout(function () { if (video.paused && !P.userPaused) { video.muted = true; var p = video.play(); if (p && p.catch) p.catch(function () { }); } }, 0);
@@ -430,7 +477,7 @@
     } else {
       P.abrir();
       // Deixa a reserva pronta em segundo plano, para a troca ser na hora se travar
-      if (LIVE) setTimeout(function () { Reserva.preparar(); }, 6000);
+      if (LIVE) setTimeout(function () { Reserva.preparar(); aprenderHost(P.url); }, 6000);
     }
   }
 

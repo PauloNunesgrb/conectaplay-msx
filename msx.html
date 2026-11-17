@@ -53,6 +53,7 @@
     get(API + '?r=cred&d=' + encodeURIComponent(D), function (e, r) {
       var d = r && r.response && r.response.data;
       if (e || !d || !d.host) return cb(e || new Error((r && r.response && r.response.message) || 'TV não ativada'));
+      if (usarHost[d.host]) d.host = usarHost[d.host];   // já está no outro endereço do fornecedor
       conta = d; contaEm = Date.now(); cb(null, d);
     });
   }
@@ -63,8 +64,23 @@
       for (var k in (extra || {})) u += '&' + k + '=' + encodeURIComponent(extra[k]);
       var h = cache[u];
       if (h && Date.now() - h.t < 600000) return cb(null, h.v);
-      get(u, function (e2, v) { if (!e2) cache[u] = { t: Date.now(), v: v }; cb(e2, v); }, 25000);
+      get(u, function (e2, v) {
+        if (!e2) { cache[u] = { t: Date.now(), v: v }; return cb(null, v); }
+        // Servidor do fornecedor sem resposta: tenta o outro endereço dele (e fica nele até o app fechar)
+        var outro = outroHost(c.host);
+        if (outro && !trocado[c.host]) { trocado[outro] = 1; usarHost[c.host] = outro; delete usarHost[outro]; c.host = outro; return xt(acao, extra, cb); }
+        cb(e2, v);
+      }, 20000);
     });
+  }
+  // Fornecedor com 2 endereços (17/11/2026, SAT caiu com erro 522): um caiu, usa o outro (e vice-versa)
+  var PAR = { 'satpremium1.shop': 'fontexofc.online', 'fontexofc.online': 'satpremium1.shop' };
+  var usarHost = {}, trocado = {};
+  function outroHost(host) {
+    var m = /^(https?:\/\/)([^\/:]+)(:\d+)?$/i.exec(host || ''); if (!m) return null;
+    var h = m[2].toLowerCase(), a = PAR[h];
+    if (!a) { try { a = window.localStorage.getItem('cp_alt_' + h); } catch (e) { } }
+    return a && a !== h ? m[1] + a + (m[3] || '') : null;
   }
   function arr(v) { return Object.prototype.toString.call(v) === '[object Array]' ? v : []; }
   function urlVideo(c, t, id, ext) {

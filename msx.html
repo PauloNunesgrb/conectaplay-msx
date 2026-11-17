@@ -155,10 +155,46 @@
         { type: 'separator' },
         { icon: ICO[t], label: 'Todos', data: req('lista:' + t + ':') }
       ];
-      arr(v).forEach(function (k) { menu.push({ icon: 'chevron-right', label: curto(k.category_name, t), data: req('lista:' + t + ':' + k.category_id) }); });
+      // Categorias com o mesmo começo (Globo Sul, Globo Norte...) viram 1 item; as regiões aparecem do lado (pedido do Paulo, 17/11)
+      var grupos = t === 'live' ? gruposDe(v) : {}, feito = {};
+      arr(v).forEach(function (k) {
+        var g = t === 'live' ? grupoDe(k.category_name) : null;
+        if (g && grupos[g.k] >= 3) {
+          if (feito[g.k]) return;
+          feito[g.k] = 1;
+          return menu.push({ icon: 'folder', label: g.nome + '  {col:msx-white-soft}(' + grupos[g.k] + '){col}', data: req('grupo:' + t + ':' + g.k) });
+        }
+        menu.push({ icon: 'chevron-right', label: curto(k.category_name, t), data: req('lista:' + t + ':' + k.category_id) });
+      });
       var o = { name: 'ConectaPlay', headline: NOME[t], logo: BASE + '/msx/logo-' + t + '.png', logoSize: 'large', style: 'flat-separator', menu: menu };
       deco(o);
       cb(null, o);
+    });
+  }
+  // Grupo de categorias: "⚔ GLOBO SUL" e "Canais | Globo Sul" → Globo; tudo de 24 horas → 24 Horas. Adulto nunca entra em grupo.
+  function grupoDe(nome) {
+    var n = curto(nome).replace(/^[^0-9A-Za-zÀ-ÿ]+/, '');
+    if (/adult|onlyfans|xxx|\+18/i.test(n)) return null;
+    if (/(^|[^0-9])24\s*h(oras)?([^a-z]|$)|\[24h\]/i.test(n)) return { k: '24horas', nome: '24 Horas' };
+    var w = (n.split(/\s+/)[0] || '').replace(/[^0-9A-Za-zÀ-ÿ+]/g, '');
+    if (w.length < 3) return null;
+    return { k: chaveG(w), nome: w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() };
+  }
+  function chaveG(w) { return String(w).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+  function gruposDe(v) { var c = {}; arr(v).forEach(function (k) { var g = grupoDe(k.category_name); if (g) c[g.k] = (c[g.k] || 0) + 1; }); return c; }
+  // Lado direito do grupo: um botão por região/categoria
+  function grupo(t, gk, cb) {
+    xt(ACAO_CATS[t], null, function (e, v) {
+      if (e) return cb(e);
+      var nome = '', itens = [];
+      arr(v).forEach(function (k) {
+        var g = grupoDe(k.category_name);
+        if (!g || g.k !== gk) return;
+        nome = g.nome;
+        itens.push({ title: curto(k.category_name, t).replace(/^[^0-9A-Za-zÀ-ÿ]+/, ''), icon: 'msx-white-soft:' + ICO[t], color: COR.cats, action: 'content:' + req('lista:' + t + ':' + k.category_id) });
+      });
+      if (!itens.length) return cb(null, vazio(NOME[t], 'Nada por aqui.'));
+      cb(null, paginas(nome, 'live', itens, itens.length + ' categorias', 8));
     });
   }
   // Monta a grade em páginas que cabem do lado direito, ao lado do menu de categorias (como no app ConectaPlay).
@@ -259,6 +295,7 @@
       function executar() { try {
         if (p[0] === 'cats') return categorias(p[1], fim);
         if (p[0] === 'menu') return menuCats(p[1], fim);
+        if (p[0] === 'grupo') return grupo(p[1], p[2], fim);
         if (p[0] === 'lista') return lista(p[1], p.slice(2).join(':'), fim);
         if (p[0] === 'serie') return serie(p.slice(1).join(':'), fim);
         if (p[0] === 'favs') return favoritos(fim);

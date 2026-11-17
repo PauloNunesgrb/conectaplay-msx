@@ -279,12 +279,13 @@
       var vai = function () {
         if (session !== self.session) return;
         var m = window.mpegts;
-        if (!m || !m.isSupported || !m.isSupported()) return self.next();
+        if (!m) { log('Player rápido não carregou (mpegts.min.js)'); return self.next(); }
+        if (!m.isSupported || !m.isSupported()) { log('Player rápido não suportado nesta TV'); return self.next(); }
         var p;
         try {
           // Mesma configuração do app ConectaPlay (= FunPlay, lida em 20/10/2026)
           p = m.createPlayer({ type: 'mpegts', isLive: true, url: u }, { enableWorker: false, enableStashBuffer: false, liveBufferLatencyChasing: false });
-        } catch (e) { return self.next(); }
+        } catch (e) { log('Player rápido não abriu: ' + (e && e.message)); return self.next(); }
         self.mp = p;
         p.on(m.Events.ERROR, function (tipo, det) {
           if (session !== self.session) return;

@@ -90,7 +90,7 @@
     return deco(o);
   }
   function vazio(titulo, texto) {
-    return deco({ type: 'list', headline: titulo, items: [{ type: 'default', layout: '0,0,12,3', color: COR.item, icon: 'info-outline', title: titulo, text: texto, action: 'back' }] });
+    return deco({ type: 'list', headline: titulo, template: { type: 'default', layout: '0,0,12,2', color: COR.item }, items: [{ icon: 'info-outline', title: titulo, titleFooter: texto, action: 'back' }] });
   }
   // Vistos (selo verde): guardados junto com os favoritos desta TV
   function visto(k, id) { return arr(conta && conta.favoritos).some(function (f) { return f.t === 'visto' && f.k === k && String(f.id) === String(id); }); }
